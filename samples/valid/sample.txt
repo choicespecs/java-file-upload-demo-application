@@ -1,0 +1,8 @@
+This is a sample plain-text file for testing the upload endpoint.
+
+It contains multiple lines and standard ASCII characters.
+Uploaded files of this type should:
+  - Be accepted (text/plain MIME type)
+  - Have scanStatus: CLEAN
+  - Store the original filename (sanitized)
+  - Be downloadable by the owner

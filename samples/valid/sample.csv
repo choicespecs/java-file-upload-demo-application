@@ -1,0 +1,6 @@
+id,name,email,department,salary
+1,Alice Johnson,alice@example.com,Engineering,95000
+2,Bob Smith,bob@example.com,Marketing,72000
+3,Charlie Brown,charlie@example.com,Engineering,88000
+4,Diana Prince,diana@example.com,HR,65000
+5,Eve Torres,eve@example.com,Engineering,102000

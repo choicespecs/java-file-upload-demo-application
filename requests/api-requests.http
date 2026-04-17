@@ -1,0 +1,288 @@
+### File Upload Demo — API Requests
+### Compatible with IntelliJ HTTP Client and VS Code REST Client extension
+### Run the app first: ./mvnw spring-boot:run
+
+@baseUrl = http://localhost:8080
+
+### ─────────────────────────────────────────────────────────────────────────────
+### AUTH
+### ─────────────────────────────────────────────────────────────────────────────
+
+### 1. Register a new user
+### Expected: 200 OK — { "token": "eyJ...", "username": "alice", "role": "ROLE_USER" }
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "alice",
+  "password": "password123"
+}
+
+> {%
+    client.global.set("user_token", response.body.token);
+    client.global.set("username", response.body.username);
+%}
+
+###
+
+### 2. Register a second user (for access-control tests)
+### Expected: 200 OK
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "bob",
+  "password": "password123"
+}
+
+> {%
+    client.global.set("other_token", response.body.token);
+%}
+
+###
+
+### 3. Register — duplicate username
+### Expected: 400 Bad Request — { "error": "Username already taken" }
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "alice",
+  "password": "anotherpassword"
+}
+
+###
+
+### 4. Register — username too short (< 3 chars)
+### Expected: 400 Bad Request
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "ab",
+  "password": "password123"
+}
+
+###
+
+### 5. Register — password too short (< 6 chars)
+### Expected: 400 Bad Request
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "charlie",
+  "password": "abc"
+}
+
+###
+
+### 6. Login — success
+### Expected: 200 OK — { "token": "eyJ...", "username": "alice", "role": "ROLE_USER" }
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "alice",
+  "password": "password123"
+}
+
+> {%
+    client.global.set("user_token", response.body.token);
+%}
+
+###
+
+### 7. Login — wrong password
+### Expected: 401 Unauthorized — { "error": "Invalid credentials" }
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "alice",
+  "password": "wrongpassword"
+}
+
+###
+
+### 8. Login — unknown user
+### Expected: 401 Unauthorized — { "error": "Invalid credentials" }
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "nobody",
+  "password": "password123"
+}
+
+###
+
+### 9. Login — locked account (after 5 failed attempts)
+### Expected: 423 Locked — { "error": "Account is locked due to too many failed login attempts" }
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "lockeduser",
+  "password": "anypassword"
+}
+
+
+### ─────────────────────────────────────────────────────────────────────────────
+### FILES — requires valid JWT in user_token / admin_token variables above
+### ─────────────────────────────────────────────────────────────────────────────
+
+### 10. Upload a text file
+### Expected: 200 OK — FileMetadataDto with scanStatus: "CLEAN"
+POST {{baseUrl}}/api/files/upload
+Authorization: Bearer {{user_token}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="sample.txt"
+Content-Type: text/plain
+
+Hello from the API request file!
+--boundary--
+
+> {%
+    client.global.set("file_id", response.body.id);
+%}
+
+###
+
+### 11. Upload a blocked extension (.exe)
+### Expected: 422 Unprocessable Entity — { "error": "File type not allowed: .exe" }
+POST {{baseUrl}}/api/files/upload
+Authorization: Bearer {{user_token}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="virus.exe"
+Content-Type: application/octet-stream
+
+This pretends to be an executable
+--boundary--
+
+###
+
+### 12. Upload a shell script (.sh)
+### Expected: 422 Unprocessable Entity — { "error": "File type not allowed: .sh" }
+POST {{baseUrl}}/api/files/upload
+Authorization: Bearer {{user_token}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="deploy.sh"
+Content-Type: text/plain
+
+#!/bin/bash
+echo "blocked"
+--boundary--
+
+###
+
+### 13. Upload with path traversal in filename
+### Expected: 200 OK — originalFilename sanitized (../ replaced with _)
+POST {{baseUrl}}/api/files/upload
+Authorization: Bearer {{user_token}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="../../etc/passwd"
+Content-Type: text/plain
+
+fake content
+--boundary--
+
+###
+
+### 14. Upload without authentication
+### Expected: 401 or 403
+POST {{baseUrl}}/api/files/upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="test.txt"
+Content-Type: text/plain
+
+content
+--boundary--
+
+###
+
+### 15. List own files
+### Expected: 200 OK — array of FileMetadataDto belonging to the authenticated user
+GET {{baseUrl}}/api/files
+Authorization: Bearer {{user_token}}
+
+###
+
+### 16. List own files — no auth
+### Expected: 401 or 403
+GET {{baseUrl}}/api/files
+
+###
+
+### 17. Download file by ID (as owner)
+### Expected: 200 OK — file bytes, Content-Disposition: attachment; filename="..."
+GET {{baseUrl}}/api/files/{{file_id}}
+Authorization: Bearer {{user_token}}
+
+###
+
+### 18. Download file by ID (as other user — non-owner)
+### Expected: 403 Forbidden — { "error": "Access denied" }
+GET {{baseUrl}}/api/files/{{file_id}}
+Authorization: Bearer {{other_token}}
+
+###
+
+### 19. Get file metadata
+### Expected: 200 OK — { id, originalFilename, mimeType, size, scanStatus, ownerUsername, createdAt }
+GET {{baseUrl}}/api/files/{{file_id}}/meta
+Authorization: Bearer {{user_token}}
+
+###
+
+### 20. Get metadata as non-owner
+### Expected: 403 Forbidden — { "error": "Access denied" }
+GET {{baseUrl}}/api/files/{{file_id}}/meta
+Authorization: Bearer {{other_token}}
+
+###
+
+### 21. Delete file (as owner)
+### Expected: 204 No Content
+DELETE {{baseUrl}}/api/files/{{file_id}}
+Authorization: Bearer {{user_token}}
+
+###
+
+### 22. Delete file (as non-owner)
+### Expected: 403 Forbidden — { "error": "Access denied" }
+DELETE {{baseUrl}}/api/files/{{file_id}}
+Authorization: Bearer {{other_token}}
+
+###
+
+### 23. List ALL files — admin only
+### First register an admin manually or set ROLE_ADMIN in DB,
+### then log in and capture the token as admin_token.
+### Expected: 200 OK — all files from all users
+GET {{baseUrl}}/api/files/all
+Authorization: Bearer {{admin_token}}
+
+###
+
+### 24. List all files as a regular user
+### Expected: 403 Forbidden
+GET {{baseUrl}}/api/files/all
+Authorization: Bearer {{user_token}}
+
+###
+
+### 25. Download non-existent file ID
+### Expected: 500 Internal Server Error — { "error": "File not found: 999999" }
+GET {{baseUrl}}/api/files/999999
+Authorization: Bearer {{user_token}}

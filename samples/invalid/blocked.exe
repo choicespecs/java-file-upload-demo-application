@@ -1,0 +1,9 @@
+This file has a .exe extension and should be rejected by the upload endpoint.
+
+Expected response:
+  HTTP 422 Unprocessable Entity
+  { "error": "File type not allowed: .exe" }
+
+The check happens in FileSecurityService.validateAndGetMimeType() before any
+content is written to disk — the extension is inspected against a BLOCKED_EXTENSIONS
+set regardless of what the Content-Type header claims.

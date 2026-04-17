@@ -1,0 +1,11 @@
+{
+  "project": "file-upload-demo",
+  "version": "1.0.0",
+  "description": "Sample JSON file for upload testing",
+  "settings": {
+    "maxFileSizeMb": 10,
+    "allowedTypes": ["text/plain", "text/csv", "application/json", "application/pdf", "image/png", "image/jpeg"],
+    "scanEnabled": true
+  },
+  "tags": ["demo", "spring-boot", "security"]
+}
