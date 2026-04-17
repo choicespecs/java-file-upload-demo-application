@@ -55,7 +55,7 @@ Spring Boot 3.2 · Spring Security 6 · Spring Data JPA · jjwt 0.12 · Apache T
 
 This codebase is fully documented.
 
-**Architecture overview:** See [`ARCHITECTURE.md`](./ARCHITECTURE.md) in the project root. It covers system overview, ASCII architecture diagram, component breakdown, data flow (upload, download, error paths), design decisions with rationale and trade-offs, common patterns, and known complexity areas.
+**Architecture overview:** See [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) in the project root. It covers system overview, ASCII architecture diagram, component breakdown, data flow (upload, download, error paths), design decisions with rationale and trade-offs, common patterns, and known complexity areas.
 
 **Inline documentation conventions:**
 - All Java source files use **Javadoc** (`/** ... */`) on every class, interface, enum constant, and public/private method.

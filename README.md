@@ -105,7 +105,17 @@ curl -s http://localhost:8080/api/files \
   -H "Authorization: Bearer $TOKEN" | jq .
 ```
 
-## File Security
+## Security
+
+See [`SECURITY.md`](docs/SECURITY.md) for the full security guide, including:
+
+- JWT authentication model, known gaps, and hardening steps
+- File upload threat model and how each threat is addressed
+- Missing defences (ClamAV, image re-encoding, dangerous MIME types) with implementation guidance
+- Access control, injection/XSS, brute-force lockout, transport security, and secrets management
+- Production hardening checklist
+
+### File Upload Defences (summary)
 
 Uploads go through `FileSecurityService` before being written to disk:
 
@@ -184,6 +194,6 @@ src/main/java/com/demo/fileupload/
 
 This application is a layered Spring Boot REST API with a stateless JWT authentication filter, a three-stage file security pipeline (extension blocking, Apache Tika MIME detection, zip-bomb streaming check), and role-based ownership access control. File bytes are stored under UUID-named paths to prevent path traversal; original filenames are sanitised and kept only in the database.
 
-For a full system description including an architecture diagram, component breakdown, detailed data flow, and documented design decisions, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+For a full system description including an architecture diagram, component breakdown, detailed data flow, and documented design decisions, see [`ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 All Java source files are documented with Javadoc on every class and method. The JavaScript frontend (`app.js`) uses JSDoc block comments. Inline `//` comments explain non-obvious logic throughout.

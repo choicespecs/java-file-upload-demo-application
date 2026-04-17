@@ -226,7 +226,13 @@ Reference: `FileSecurityService.java`, `sanitizeFilename` method (~line 49).
 
 ---
 
-## 7. Known Complexity Areas
+## 7. Security Reference
+
+For a full security treatment — threat model, implemented defences, known gaps, and production hardening checklist — see [`SECURITY.md`](SECURITY.md).
+
+---
+
+## 8. Known Complexity Areas
 
 ### `FileSecurityService.checkZipBomb` — `FileSecurityService.java` lines 57–76
 The zip-bomb check is non-trivial for two reasons. First, it cannot use `ZipEntry.getSize()` for DEFLATED entries (returns -1), so it must stream all decompressed bytes through an 8 KB buffer to count them accurately. Second, the ratio check `uncompressed / compressedSize > MAX_ZIP_EXPANSION_RATIO` uses integer division; if `compressedSize` is 0 or `uncompressed` is 0 the check is safely skipped, but the condition guards are not immediately obvious.
