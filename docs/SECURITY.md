@@ -124,6 +124,20 @@ For any file Tika identifies as `application/zip` or `application/x-zip-compress
 
 The sanitized name is stored in the database for display and `Content-Disposition` headers only. **The on-disk file is always named by a UUID** (`FileService.upload` line ~60), making path traversal impossible regardless of what filename is supplied.
 
+### Layer 5 — Chunked upload security controls
+
+The chunked upload path (`ChunkedUploadController` + `ChunkedUploadService`) adds five controls specific to multi-step uploads:
+
+**Session ownership enforcement.** Every call to the chunk, complete, and abort endpoints extracts the `UploadSession` from the `ConcurrentHashMap` and verifies `session.username.equals(auth.getName())`. If the caller's authenticated username does not match the session owner, `AccessDeniedException` is thrown → HTTP 403. An attacker who guesses or observes another user's `uploadId` (a UUID, so 122 bits of entropy) cannot inject chunks into or complete that user's upload.
+
+**Total size validated at session init.** `ChunkedUploadService.initSession` checks `totalSize > app.max-large-file-size-mb * 1024 * 1024` and throws `IllegalArgumentException` → HTTP 400 before creating any on-disk state. This prevents trivially large sessions from being initiated.
+
+**Security validation on the assembled file, not individual chunks.** Extension blocking, Tika magic-byte detection, and zip-bomb detection all run against the fully assembled file via `FileSecurityService.validateAndGetMimeType(Path, String)`. Validating individual chunks would be meaningless — a 5 MB chunk of a ZIP or executable has no file header until the full file is assembled. Running the check post-assembly is the only correct approach.
+
+**UUID-based temp directory isolation.** Each upload session gets its own subdirectory `{upload-dir}/chunks/{uploadId}/` where `uploadId` is a `UUID.randomUUID()`. This prevents two concurrent uploads from colliding on chunk filenames, and means a path traversal in `chunkIndex` cannot escape the session's sandbox directory (chunk index is cast to an integer before constructing the path).
+
+**Assembled file deleted on security rejection.** In `ChunkedUploadService.assembleAndPersist`, if `validateAndGetMimeType` throws `FileSecurityException`, the assembled output file is deleted before re-throwing. This prevents a security-rejected file from remaining on disk in a state where it might be served or processed by another path.
+
 ---
 
 ## 4. File upload defences — what is missing and how to add it
@@ -202,6 +216,18 @@ if (BLOCKED_MIME_TYPES.contains(detectedMime)) {
     <version>8.x</version>
 </dependency>
 ```
+
+### 4.6 Chunked upload — missing controls
+
+The chunked upload path introduces several security gaps not present in the single-request path:
+
+| Gap | Risk | Fix |
+|---|---|---|
+| No per-chunk checksum verification | A corrupted or truncated chunk is written to disk without detection; the assembled file silently contains corrupt data | Accept a `chunkChecksum` (MD5 or CRC32) query parameter per chunk; compute and verify before writing; return HTTP 422 on mismatch |
+| No session expiry / stale cleanup | An initiated but never-completed upload holds a session entry in the JVM's heap and chunk files on disk indefinitely | Add `@Scheduled` cleanup that calls `abortSession` for sessions older than a configurable TTL (e.g., 24 hours); see `DESIGN.md` technical debt table |
+| No total-chunk-count cross-validation against `totalSize` | A client could declare `totalChunks=1` but `totalSize=2 GB`; the server would accept the init and then receive one 2 GB chunk (hitting Spring multipart limits before `FileService` checks) | Validate `ceil(totalSize / app.chunk-size-mb) == totalChunks` at init time; reject if the declared chunk count is inconsistent with the declared total size |
+| Sessions not persisted — lost on restart | An in-progress upload is permanently lost if the server restarts; the client has no way to resume | Add a `POST /api/files/upload/{uploadId}/status` endpoint so clients can detect lost sessions early; or persist sessions to the database |
+| Temp chunk files not cleaned on JVM crash | A `SIGKILL` or OOM kill between assembly completion and `Files.walkFileTree` deletion leaves orphaned chunk files | A startup `@PostConstruct` routine in `ChunkedUploadService` should scan `{upload-dir}/chunks/` and delete any subdirectory whose `uploadId` is not in the active session map |
 
 ### 4.5 Serving files from an isolated origin
 
@@ -406,6 +432,14 @@ Use this checklist before deploying to a production environment.
 - [ ] User-uploaded files are served from a separate domain or subdomain
 - [ ] `Content-Disposition: attachment` is set on all download responses (already done)
 - [ ] Upload directory is outside the web root and not served statically
+
+### Chunked upload
+- [ ] `app.max-large-file-size-mb` is set to the largest acceptable value for your storage and bandwidth budget
+- [ ] `app.chunk-size-mb` is aligned with `CHUNK_SIZE` in `app.js`
+- [ ] Stale session cleanup is implemented (`@Scheduled` TTL-based abort)
+- [ ] A `@PostConstruct` routine cleans up orphaned `{upload-dir}/chunks/` subdirectories on startup
+- [ ] Per-chunk checksum verification is in place (MD5 or CRC32 query parameter)
+- [ ] `totalChunks` is validated against `totalSize / chunkSizeMb` at session init
 
 ### Access control
 - [ ] No endpoint exists that can elevate a user to `ROLE_ADMIN` without itself requiring `ROLE_ADMIN`

@@ -1,0 +1,51 @@
+large-sample.bin — 15 MB random binary file for testing chunked upload.
+
+File:       large-sample.bin
+Size:       15 MB  (15,728,640 bytes)
+Content:    Random bytes from /dev/urandom (non-compressible)
+MIME type:  application/octet-stream
+
+Expected behaviour:
+  - Frontend detects size > CHUNK_THRESHOLD (10 MB) and uses the chunked upload path
+  - File is split into 3 chunks (15 MB / 5 MB per chunk = 3 chunks)
+  - Progress bar shown during chunk upload
+  - Server assembles chunks, runs security validation, persists metadata
+  - Response: 200 OK with FileMetadataDto, scanStatus: CLEAN
+
+To upload via curl (chunked path):
+  TOKEN="<your JWT>"
+
+  # Step 1 — init
+  UPLOAD_ID=$(curl -s -X POST http://localhost:8080/api/files/upload/init \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"filename":"large-sample.bin","totalSize":15728640,"totalChunks":3}' \
+    | jq -r '.uploadId')
+
+  # Step 2 — send chunks (split the file into 5 MB pieces first)
+  split -b 5242880 large-sample.bin chunk_
+  for i in 0 1 2; do
+    FILE=chunk_$(printf '%02d' $((i+1)) | awk '{printf "%c", 96+$1}')  # aa, ab, ac
+    curl -s -X POST "http://localhost:8080/api/files/upload/$UPLOAD_ID/chunk?chunkIndex=$i" \
+      -H "Authorization: Bearer $TOKEN" \
+      -F "chunk=@chunk_$(echo $i | awk '{printf "%c%c", 97, 97+$1}')" | jq .
+  done
+
+  # Simpler curl approach: use dd to extract each chunk
+  dd if=large-sample.bin bs=5242880 skip=0 count=1 of=/tmp/chunk0
+  dd if=large-sample.bin bs=5242880 skip=1 count=1 of=/tmp/chunk1
+  dd if=large-sample.bin bs=5242880 skip=2 count=1 of=/tmp/chunk2
+
+  curl -s -X POST "http://localhost:8080/api/files/upload/$UPLOAD_ID/chunk?chunkIndex=0" \
+    -H "Authorization: Bearer $TOKEN" -F "chunk=@/tmp/chunk0" | jq .
+  curl -s -X POST "http://localhost:8080/api/files/upload/$UPLOAD_ID/chunk?chunkIndex=1" \
+    -H "Authorization: Bearer $TOKEN" -F "chunk=@/tmp/chunk1" | jq .
+  curl -s -X POST "http://localhost:8080/api/files/upload/$UPLOAD_ID/chunk?chunkIndex=2" \
+    -H "Authorization: Bearer $TOKEN" -F "chunk=@/tmp/chunk2" | jq .
+
+  # Step 3 — complete
+  curl -s -X POST "http://localhost:8080/api/files/upload/$UPLOAD_ID/complete" \
+    -H "Authorization: Bearer $TOKEN" | jq .
+
+Note: the browser frontend handles all of this automatically when you select
+large-sample.bin via the Upload form on the index page.

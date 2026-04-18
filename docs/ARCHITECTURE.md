@@ -14,61 +14,72 @@ The persistence layer uses H2 in-memory for development and PostgreSQL in produc
 
 ## 2. Architecture Diagram
 
-```
-Browser
-  │
-  │  GET /  /login  /register  (static HTML)
-  ├──────────────────────────────────────► WebController
-  │                                              │
-  │                                        Thymeleaf templates
-  │                                        (templates/*.html)
-  │
-  │  POST /api/auth/register|login (JSON)
-  ├──────────────────────────────────────► AuthController
-  │                                              │
-  │                                         AuthService
-  │                                         ├── UserRepository (DB)
-  │                                         ├── PasswordEncoder (BCrypt)
-  │                                         └── JwtService ──► JWT token
-  │
-  │  All /api/files/** requests
-  │  Authorization: Bearer <token>
-  │                                   ┌─────────────────────────────────────┐
-  │ ─────────────────────────────────►│ JwtAuthenticationFilter             │
-  │                                   │ (OncePerRequestFilter)              │
-  │                                   │  └─► JwtService.isValid()           │
-  │                                   │  └─► SecurityContextHolder          │
-  │                                   └─────────────┬───────────────────────┘
-  │                                                 │
-  │                                        SecurityConfig
-  │                                        (STATELESS, CSRF disabled for /api/**)
-  │                                                 │
-  │  POST /api/files/upload                         ▼
-  ├──────────────────────────────────────► FileController
-  │  GET  /api/files                                │
-  │  GET  /api/files/{id}                      FileService
-  │  GET  /api/files/{id}/meta                 ├── FileSecurityService
-  │  DELETE /api/files/{id}                    │     ├── Extension block (Set)
-  │  GET  /api/files/all  (ADMIN)              │     ├── Apache Tika (MIME)
-  │  GET  /api/files/scan/{id} (stub)          │     └── ZipInputStream (zip bomb)
-  │                                            ├── UUID-named disk write
-  │                                            ├── FileMetadataRepository (DB)
-  │                                            └── UserRepository (DB)
-  │
-  └──────────────────────────── GlobalExceptionHandler
-                                 (maps domain exceptions → HTTP status codes)
+```mermaid
+flowchart TD
+    Browser(["🌐 Browser\napp.js + Bootstrap 5"])
 
-                         Persistence Layer
-                         ┌──────────────────────────────┐
-                         │  H2 (dev) / PostgreSQL (prod) │
-                         │  tables: users, file_metadata │
-                         └──────────────────────────────┘
+    subgraph Static["Static Pages"]
+        WebCtrl["WebController"]
+        Tmpl["templates/\nindex · login · register"]
+    end
 
-                         Filesystem
-                         ┌──────────────────────────────┐
-                         │  app.upload-dir  (./uploads)  │
-                         │  files named by UUID          │
-                         └──────────────────────────────┘
+    subgraph Auth["Auth  /api/auth/**"]
+        AuthCtrl["AuthController"]
+        AuthSvc["AuthService"]
+        JwtSvc["JwtService\nHMAC-SHA256"]
+        BCrypt["BCryptPasswordEncoder"]
+    end
+
+    subgraph SecFilter["Security Filter  — every /api/** request"]
+        JwtFilter["JwtAuthenticationFilter\nOncePerRequestFilter"]
+        SecCtx["SecurityContextHolder"]
+        SecConf["SecurityConfig\nSTATELESS · CSRF off for /api/**"]
+    end
+
+    subgraph FileAPI["Standard File API  /api/files/**"]
+        FileCtrl["FileController\nPOST /upload\nGET /files/**\nDELETE /{id}"]
+        FileSvc["FileService\npersistAssembledFile"]
+        FileSec["FileSecurityService\nExtension block\nTika MIME detection\nZip-bomb streaming check"]
+    end
+
+    subgraph ChunkedAPI["Chunked Upload  /api/files/upload/**"]
+        ChunkCtrl["ChunkedUploadController\nPOST /init\nPOST /{id}/chunk\nPOST /{id}/complete\nDELETE /{id}"]
+        ChunkSvc["ChunkedUploadService\nConcurrentHashMap sessions\nUploadSession POJO"]
+    end
+
+    subgraph Persistence["Persistence"]
+        DB[("H2 / PostgreSQL\nusers · file_metadata")]
+        FS[("Filesystem  ./uploads/\nuuid  — completed files\nchunks/uploadId/N  — in-progress")]
+    end
+
+    GEH["GlobalExceptionHandler\nmaps exceptions → HTTP status"]
+
+    Browser -->|"GET / /login /register"| WebCtrl
+    WebCtrl --> Tmpl
+
+    Browser -->|"POST /api/auth/register\nPOST /api/auth/login"| AuthCtrl
+    AuthCtrl --> AuthSvc
+    AuthSvc --> JwtSvc
+    AuthSvc --> BCrypt
+    AuthSvc --> DB
+
+    Browser -->|"Authorization: Bearer token"| JwtFilter
+    JwtFilter --> SecCtx
+    JwtFilter --> SecConf
+    SecConf --> FileCtrl
+    SecConf --> ChunkCtrl
+
+    FileCtrl --> FileSvc
+    FileSvc --> FileSec
+    FileSvc --> DB
+    FileSvc --> FS
+
+    ChunkCtrl --> ChunkSvc
+    ChunkSvc --> FileSec
+    ChunkSvc --> FileSvc
+    ChunkSvc --> FS
+
+    FileCtrl & ChunkCtrl & AuthCtrl -.->|exceptions| GEH
 ```
 
 ---
@@ -79,7 +90,7 @@ Browser
 Contains the two primary configuration beans. `AppProperties` is a `@ConfigurationProperties` record bound to the `app.*` namespace in `application.properties`, providing typed access to JWT settings, upload directory, file size limits, and lockout thresholds. `SecurityConfig` assembles the Spring Security filter chain: it registers `JwtAuthenticationFilter` before `UsernamePasswordAuthenticationFilter`, disables CSRF for the `/api/**` path (because stateless JWT clients cannot maintain CSRF tokens), enables H2 console iframes via `sameOrigin` frame options, and declares `SessionCreationPolicy.STATELESS`. It also defines the `BCryptPasswordEncoder` and `DaoAuthenticationProvider` beans.
 
 ### `controller/`
-Three controllers handle all inbound HTTP. `AuthController` exposes `POST /api/auth/register` and `POST /api/auth/login`, delegating entirely to `AuthService` and returning `AuthResponse` JSON. `FileController` owns all `/api/files/**` routes and contains a private `isAdmin()` helper that inspects the current `Authentication`'s authorities — this authority check happens in the controller so the service methods receive a plain `boolean` and stay testable without a security context. `WebController` is a traditional `@Controller` (not `@RestController`) that returns Thymeleaf view names for the three SPA pages; no model data is added because the pages are driven entirely by `app.js`.
+Four controllers handle all inbound HTTP. `AuthController` exposes `POST /api/auth/register` and `POST /api/auth/login`, delegating entirely to `AuthService` and returning `AuthResponse` JSON. `FileController` owns the standard single-request `/api/files/**` routes and contains a private `isAdmin()` helper that inspects the current `Authentication`'s authorities — this authority check happens in the controller so the service methods receive a plain `boolean` and stay testable without a security context. `ChunkedUploadController` owns the four `/api/files/upload/**` endpoints (init, chunk, complete, abort) that support large file uploads in pieces; each endpoint retrieves the active `UploadSession` from `ChunkedUploadService` and verifies that the session belongs to the authenticated user before proceeding. `WebController` is a traditional `@Controller` (not `@RestController`) that returns Thymeleaf view names for the three SPA pages; no model data is added because the pages are driven entirely by `app.js`.
 
 ### `dto/`
 Data Transfer Objects that cross the controller–service boundary or the HTTP boundary. `LoginRequest` and `RegisterRequest` carry Bean Validation annotations (`@NotBlank`, `@Size`) that are enforced by `@Valid` in the controllers before service code is reached. `AuthResponse` is the JWT envelope returned on success. `FileMetadataDto` is the public representation of a file — it intentionally omits `storagePath` and `filename` (UUID) to avoid leaking internal storage structure. `FileDownloadResult` is an internal value type (Java record) used to carry the `Resource`, original filename, and MIME type from `FileService` to `FileController` without coupling the service to HTTP headers.
@@ -97,7 +108,7 @@ Spring Data JPA repositories. `UserRepository` adds `findByUsername` (used in au
 Three classes implement the JWT pipeline. `JwtService` generates, parses, and validates tokens using jjwt 0.12; it derives the HMAC-SHA256 signing key by SHA-256-hashing the raw secret string so that any ASCII string of any length can be used as the property value. `JwtAuthenticationFilter` extends `OncePerRequestFilter` and runs on every request: it extracts the `Authorization` header, calls `JwtService.isValid()`, and populates `SecurityContextHolder` if the token is valid. `UserDetailsServiceImpl` loads users from `UserRepository` and maps `User.accountLocked` to the `UserDetails.isAccountNonLocked()` flag, which Spring Security checks automatically and raises `LockedException` if `false`.
 
 ### `service/`
-The core business logic layer. `AuthService` handles registration (BCrypt hashing, duplicate check, immediate JWT issuance) and login (delegate to `AuthenticationManager`, increment failure counter on `BadCredentialsException`, lock account at threshold). `FileService` orchestrates the upload pipeline, ownership-scoped queries, streaming download via `UrlResource`, and atomic delete (disk + DB). `FileSecurityService` is the content inspection engine: extension block via a `Set<String>`, Apache Tika magic-number MIME detection, and a streaming zip-bomb check that reads actual decompressed bytes (because `ZipEntry.getSize()` returns -1 for DEFLATE entries and cannot be trusted).
+The core business logic layer. `AuthService` handles registration (BCrypt hashing, duplicate check, immediate JWT issuance) and login (delegate to `AuthenticationManager`, increment failure counter on `BadCredentialsException`, lock account at threshold). `FileService` orchestrates the single-request upload pipeline, ownership-scoped queries, streaming download via `UrlResource`, atomic delete (disk + DB), and the `persistAssembledFile` method called by `ChunkedUploadService` after a chunked upload is assembled. `FileSecurityService` is the content inspection engine: extension block via a `Set<String>`, Apache Tika magic-number MIME detection, and a streaming zip-bomb check that reads actual decompressed bytes (because `ZipEntry.getSize()` returns -1 for DEFLATE entries and cannot be trusted). It exposes two overloads of `validateAndGetMimeType`: the original `MultipartFile` variant (loads bytes into memory, used for single-request uploads) and a `Path`-based variant (streams from disk via `Tika.detect(File)` and `Files.newInputStream`, used for assembled chunked uploads to avoid loading large files into heap). `ChunkedUploadService` manages the lifecycle of in-progress chunked uploads: it maintains a `ConcurrentHashMap<String, UploadSession>` of active sessions, creates and removes per-upload temporary directories under `{upload-dir}/chunks/`, writes individual chunks to disk, and orchestrates assembly by sequentially concatenating chunk files into the final UUID-named file before delegating security validation and metadata persistence. `UploadSession` is an in-memory POJO (not a Spring bean) that records all state for one in-progress upload: `uploadId`, `username`, `originalFilename`, `totalChunks`, `totalSize`, a `Set<Integer>` of received chunk indexes, the `tempDir` path, and a `createdAt` timestamp.
 
 ### `static/` and `templates/`
 The Bootstrap 5 frontend. `login.html` and `register.html` each contain an inline `<script>` that posts credentials, stores the returned JWT in `localStorage`, and redirects to `/`. `index.html` is the main SPA shell. `app.js` owns all runtime behaviour: `loadFiles()` populates the file table, `downloadFile()` triggers a programmatic anchor-click download, `deleteFile()` calls `DELETE /api/files/{id}`, and the upload form handler provides inline feedback. `escHtml()` and `escAttr()` sanitize server-returned strings before DOM insertion to prevent stored XSS.
@@ -119,6 +130,42 @@ The Bootstrap 5 frontend. `login.html` and `register.html` each contain an inlin
 9. `FileSecurityService.validateAndGetMimeType` runs three checks in sequence: (a) blocked extension set lookup, (b) Apache Tika detects the real MIME type from file bytes, (c) if the MIME is a ZIP type, `checkZipBomb` streams through the entire decompressed content counting bytes.
 10. On success, `FileService` sanitizes the original filename, generates a UUID for the on-disk name, creates the upload directory if it does not exist, and writes the file via `MultipartFile.transferTo`.
 11. A `FileMetadata` entity is persisted with `scanStatus = CLEAN`, and a `FileMetadataDto` is returned as JSON.
+
+### Happy path: chunked file upload (files > 10 MB)
+
+For files larger than 10 MB (configurable via `CHUNK_THRESHOLD` in `app.js`), the frontend uses a four-step protocol instead of a single multipart POST.
+
+**Step 1 — Init**
+1. `app.js` posts `POST /api/files/upload/init` with `{filename, totalSize, totalChunks}` JSON body and the `Authorization: Bearer` header.
+2. `ChunkedUploadController.initUpload` delegates to `ChunkedUploadService.initSession`.
+3. `ChunkedUploadService` validates `totalSize` against `app.max-large-file-size-mb` (default 2048 MB). If exceeded, throws `IllegalArgumentException` → HTTP 400.
+4. A `UUID.randomUUID()` is generated as the `uploadId`. A new `UploadSession` POJO is created (username, originalFilename, totalChunks, totalSize, empty `receivedChunks` set, `createdAt`).
+5. `Files.createDirectories({upload-dir}/chunks/{uploadId}/}` creates the per-upload temp directory.
+6. The session is placed in the `ConcurrentHashMap`. `ChunkInitResponse{uploadId}` is returned → HTTP 200.
+
+**Step 2 — Upload chunks**
+1. `app.js` slices the file into `CHUNK_SIZE` (5 MB) segments and POSTs each as `POST /api/files/upload/{uploadId}/chunk?chunkIndex=N` with the chunk bytes as a multipart `chunk` field.
+2. `ChunkedUploadController.uploadChunk` loads the session; throws `IllegalArgumentException` if not found. Verifies `session.username == auth.getName()` — throws `AccessDeniedException` if mismatch.
+3. The chunk bytes are written to `{tempDir}/{chunkIndex}` on disk.
+4. `chunkIndex` is added to `session.receivedChunks`. `ChunkUploadResponse{uploadId, chunksReceived, totalChunks}` is returned → HTTP 200.
+5. The frontend updates the progress bar (`div#upload-progress-bar`) after each successful chunk response.
+
+**Step 3 — Complete**
+1. After all chunks are confirmed, `app.js` posts `POST /api/files/upload/{uploadId}/complete`.
+2. `ChunkedUploadController.completeUpload` loads and verifies session ownership.
+3. `ChunkedUploadService.assembleFile` iterates chunk indexes 0 through `totalChunks - 1` in order, copying each chunk file's bytes into a new `OutputStream` writing to `{upload-dir}/{UUID}`.
+4. `FileSecurityService.validateAndGetMimeType(Path assembledPath, String originalFilename)` runs on the assembled file. This overload uses `Tika.detect(File)` for magic-byte detection and `Files.newInputStream` for the zip-bomb streaming check — the assembled file is never fully loaded into heap.
+5. On success, `FileService.persistAssembledFile(storedName, storedPath, sanitizedOriginal, size, mimeType, username)` persists a `FileMetadata` entity (same structure as single-request uploads, `scanStatus = CLEAN`).
+6. The temporary directory and all chunk files are deleted. The session is removed from the map. `FileMetadataDto` is returned → HTTP 200.
+
+**Abort**
+1. If the upload is cancelled or an unrecoverable error occurs, `app.js` calls `DELETE /api/files/upload/{uploadId}`.
+2. `ChunkedUploadService` deletes the temp directory tree and removes the session from the map. Returns HTTP 204.
+
+**Data written:** chunk files written to `{upload-dir}/chunks/{uploadId}/` (temporary, deleted after assembly); assembled file at `{upload-dir}/{UUID}` (permanent); one row in `file_metadata`.
+**In-memory state:** `UploadSession` in `ConcurrentHashMap` for the duration of the upload; removed on complete or abort.
+
+---
 
 ### Happy path: file download
 
@@ -167,6 +214,31 @@ The Bootstrap 5 frontend. `login.html` and `register.html` each contain an inlin
 ### Decision: Zip-bomb detection by streaming actual decompressed bytes
 **Rationale:** `ZipEntry.getSize()` returns -1 for DEFLATE-compressed entries and cannot be trusted. Reading and counting actual bytes during decompression is the only reliable way to detect bombs. The check imposes two independent limits: absolute uncompressed size (500 MB) and compression ratio (100×), so both dense and highly repetitive archives are caught.
 **Trade-offs:** Processing a maximally-allowed ZIP upload (10 MB compressed, <500 MB uncompressed) requires reading and discarding up to 500 MB of data in memory buffers. The 8 KB buffer mitigates heap pressure; the 500 MB ceiling limits worst-case CPU time.
+
+### Decision: Chunked upload sessions stored in-memory (`ConcurrentHashMap`), not in the database
+
+**Rationale:** Using an in-memory map keeps the chunked upload feature entirely self-contained with no schema changes and no new external dependencies. For a single-JVM demo deployment this is correct and simple.
+
+**Trade-offs:**
+- Sessions are lost on application restart — any in-progress upload must be restarted.
+- The map is not shared across JVM instances, so load-balanced multi-instance deployments would route chunks to different nodes and lose session state. A Redis or database-backed session store would be needed for horizontal scaling.
+- There is no scheduled cleanup of stale sessions. An upload that is initiated but never completed or aborted (e.g., the browser tab is closed without sending the abort) leaves a session entry in the map and temporary chunk files on disk indefinitely. A production implementation should add a `@Scheduled` task that removes sessions older than a configurable TTL (e.g., 24 hours) and deletes their temp directories.
+
+**Alternatives considered:** Database-backed sessions (a new `upload_sessions` table) or a Redis-backed distributed store. Neither was chosen because the added complexity is not justified for a single-JVM demo.
+
+**Evidence:** `ChunkedUploadService` field `ConcurrentHashMap<String, UploadSession> sessions`; `UploadSession.createdAt` exists (providing the data needed for TTL-based cleanup) but no `@Scheduled` consumer reads it.
+
+---
+
+### Decision: `validateAndGetMimeType` Path overload streams from disk for large file validation
+
+**Rationale:** The original `validateAndGetMimeType(MultipartFile)` overload calls `file.getBytes()`, loading the entire file into a heap `byte[]`. This is acceptable for the 10 MB single-request upload limit but would be prohibitive for files up to 2 GB allowed by the chunked path. The Path-based overload uses `Tika.detect(File)` (which reads only the magic-byte header region) and `Files.newInputStream` (which streams the file for the zip-bomb check) so the full file content is never resident in heap simultaneously.
+
+**Trade-offs:** The two overloads have slightly different Tika call paths (`tika.detect(bytes, filename)` vs. `Tika.detect(File)`) which could theoretically produce different MIME results for edge-case files. In practice, both paths consult the same Tika magic-byte database.
+
+**Evidence:** `FileSecurityService.validateAndGetMimeType(Path, String)` overload; `checkZipBomb` refactored to accept `InputStream` to support both call sites.
+
+---
 
 ### Decision: `isAdmin` boolean passed from controller to service
 **Rationale:** Service methods do not access `SecurityContextHolder` directly. This design makes services pure (no implicit security context dependency) and trivially testable — tests can pass `true` or `false` without mocking Spring Security.
@@ -234,8 +306,8 @@ For a full security treatment — threat model, implemented defences, known gaps
 
 ## 8. Known Complexity Areas
 
-### `FileSecurityService.checkZipBomb` — `FileSecurityService.java` lines 57–76
-The zip-bomb check is non-trivial for two reasons. First, it cannot use `ZipEntry.getSize()` for DEFLATED entries (returns -1), so it must stream all decompressed bytes through an 8 KB buffer to count them accurately. Second, the ratio check `uncompressed / compressedSize > MAX_ZIP_EXPANSION_RATIO` uses integer division; if `compressedSize` is 0 or `uncompressed` is 0 the check is safely skipped, but the condition guards are not immediately obvious.
+### `FileSecurityService.checkZipBomb` — `FileSecurityService.java`
+The zip-bomb check is non-trivial for two reasons. First, it cannot use `ZipEntry.getSize()` for DEFLATED entries (returns -1), so it must stream all decompressed bytes through an 8 KB buffer to count them accurately. Second, the ratio check `uncompressed / compressedSize > MAX_ZIP_EXPANSION_RATIO` uses integer division; if `compressedSize` is 0 or `uncompressed` is 0 the check is safely skipped, but the condition guards are not immediately obvious. The method was refactored to accept an `InputStream` (instead of `byte[]`) to support both the `MultipartFile` upload path (where a `ByteArrayInputStream` wraps the in-memory bytes) and the chunked upload path (where a `Files.newInputStream` streams directly from the assembled file on disk). When reviewing or modifying this method, be aware that both call paths must pass the correct `compressedSize` argument — for the `Path` overload this is `Files.size(path)`, not an in-memory byte array length.
 
 ### `AuthService.login` — `AuthService.java` lines 46–70
 The login method has a subtle dual-check structure: it first checks `accountLocked` on the entity before calling `AuthenticationManager.authenticate`, because `AuthenticationManager` also calls `UserDetailsServiceImpl.loadUserByUsername` which propagates `accountLocked` to `UserDetails`. The entity-level check is redundant in terms of correctness but exists to allow `AuthService` to throw `LockedException` directly with a controlled message before the Spring Security machinery runs. The `failedAttempts` increment inside the catch block must happen before re-throwing, and the `@Transactional` annotation ensures both the counter update and save are committed even though an exception is propagating.

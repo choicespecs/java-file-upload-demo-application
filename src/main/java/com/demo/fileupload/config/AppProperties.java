@@ -60,4 +60,18 @@ public class AppProperties {
      * current implementation).
      */
     private int maxLoginAttempts = 5;
+
+    /**
+     * Size in megabytes of each individual chunk sent during a chunked upload.
+     * Must be less than {@code spring.servlet.multipart.max-file-size}.
+     * The frontend uses this value to slice the file; changing it requires a matching
+     * frontend update or a config endpoint.
+     */
+    private long chunkSizeMb = 5;
+
+    /**
+     * Maximum total file size in megabytes allowed via the chunked upload path.
+     * Files larger than this are rejected at session initialisation.
+     */
+    private long maxLargeFileSizeMb = 2048;
 }

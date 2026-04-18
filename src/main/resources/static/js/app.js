@@ -98,32 +98,146 @@ async function deleteFile(id) {
     else alert('Delete failed');
 }
 
-// Upload form submit handler — reads the selected file, POSTs as multipart/form-data,
-// and displays inline success or error feedback without a page reload.
-document.getElementById('upload-form').addEventListener('submit', async function(e) {
-    e.preventDefault();
-    const file = document.getElementById('file-input').files[0];
-    if (!file) return;
-    const form = new FormData();
-    form.append('file', file);
-    const msgEl = document.getElementById('upload-msg');
-    msgEl.className = 'alert d-none'; // hide any previous message
+/**
+ * Files at or below this threshold use the single-request upload endpoint.
+ * Files above it are split into CHUNK_SIZE-byte pieces and uploaded via the
+ * chunked upload API. Both thresholds must stay in sync with the backend
+ * app.max-file-size-mb and app.chunk-size-mb properties.
+ */
+const CHUNK_THRESHOLD = 10 * 1024 * 1024;  // 10 MB — matches app.max-file-size-mb
+const CHUNK_SIZE      =  5 * 1024 * 1024;  //  5 MB — matches app.chunk-size-mb
+
+/**
+ * Uploads a large file by splitting it into fixed-size chunks, sending each chunk
+ * sequentially, and finalising the assembly server-side.
+ *
+ * Steps:
+ *  1. POST /api/files/upload/init   → obtain uploadId
+ *  2. POST /api/files/upload/{id}/chunk?chunkIndex=N  (repeated for each chunk)
+ *  3. POST /api/files/upload/{id}/complete            → server assembles and validates
+ *
+ * The progress bar is updated after each successful chunk. On any error the session
+ * is aborted via DELETE /api/files/upload/{id} to clean up temp files.
+ *
+ * @param {File} file - The File object selected by the user
+ * @returns {Promise<Object>} Resolves with the FileMetadataDto on success
+ * @throws {Error} On network failure, server rejection, or security validation failure
+ */
+async function chunkedUpload(file) {
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    const progressWrap = document.getElementById('upload-progress');
+    const progressBar  = document.getElementById('upload-progress-bar');
+    const progressText = document.getElementById('upload-progress-text');
+
+    progressWrap.classList.remove('d-none');
+    progressBar.classList.add('progress-bar-animated');
+    progressBar.style.width = '0%';
+    progressBar.textContent = '0%';
+    progressText.textContent = 'Initialising…';
+
+    // Step 1 — init session
+    let uploadId;
+    const initRes = await fetch('/api/files/upload/init', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: file.name, totalSize: file.size, totalChunks })
+    });
+    if (!initRes.ok) {
+        progressWrap.classList.add('d-none');
+        const err = await initRes.json();
+        throw new Error(err.error || 'Failed to initialise upload');
+    }
+    ({ uploadId } = await initRes.json());
+
+    // Step 2 — send chunks
     try {
-        // Note: no Content-Type header — the browser sets it automatically with the correct boundary
-        const res = await fetch('/api/files/upload', { method: 'POST', headers: authHeaders(), body: form });
-        if (res.ok) {
-            msgEl.className = 'alert alert-success';
-            msgEl.textContent = 'Upload successful';
-            document.getElementById('file-input').value = ''; // clear file picker
-            loadFiles(); // refresh the table to show the new file
-        } else {
-            const err = await res.json();
-            msgEl.className = 'alert alert-danger';
-            msgEl.textContent = err.error || 'Upload failed';
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * CHUNK_SIZE;
+            const end   = Math.min(start + CHUNK_SIZE, file.size);
+            const form  = new FormData();
+            form.append('chunk', file.slice(start, end));
+
+            const chunkRes = await fetch(
+                `/api/files/upload/${uploadId}/chunk?chunkIndex=${i}`,
+                { method: 'POST', headers: authHeaders(), body: form }
+            );
+            if (!chunkRes.ok) {
+                const err = await chunkRes.json();
+                throw new Error(err.error || `Chunk ${i} upload failed`);
+            }
+
+            // Reserve the last 10% of the bar for the assembly/validation step
+            const pct = Math.round(((i + 1) / totalChunks) * 90);
+            progressBar.style.width = pct + '%';
+            progressBar.textContent = pct + '%';
+            progressText.textContent = `Uploading chunk ${i + 1} of ${totalChunks}…`;
         }
     } catch (err) {
+        // Best-effort cleanup — ignore abort errors so the original error propagates
+        fetch(`/api/files/upload/${uploadId}`, { method: 'DELETE', headers: authHeaders() })
+            .catch(() => {});
+        progressWrap.classList.add('d-none');
+        throw err;
+    }
+
+    // Step 3 — complete (assembly + security validation happens server-side)
+    progressText.textContent = 'Assembling and validating…';
+    const completeRes = await fetch(`/api/files/upload/${uploadId}/complete`, {
+        method: 'POST',
+        headers: authHeaders()
+    });
+    if (!completeRes.ok) {
+        fetch(`/api/files/upload/${uploadId}`, { method: 'DELETE', headers: authHeaders() })
+            .catch(() => {});
+        progressWrap.classList.add('d-none');
+        const err = await completeRes.json();
+        throw new Error(err.error || 'Failed to complete upload');
+    }
+
+    progressBar.style.width = '100%';
+    progressBar.textContent = '100%';
+    progressBar.classList.remove('progress-bar-animated');
+    progressText.textContent = 'Complete';
+    // Hide the bar after a short delay so the user can see it reach 100%
+    setTimeout(() => {
+        progressWrap.classList.add('d-none');
+        progressBar.classList.add('progress-bar-animated');
+    }, 1500);
+
+    return completeRes.json();
+}
+
+// Upload form submit handler — branches on file size: files above CHUNK_THRESHOLD use
+// the chunked path; smaller files use the single-request endpoint.
+document.getElementById('upload-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const file  = document.getElementById('file-input').files[0];
+    if (!file) return;
+    const msgEl = document.getElementById('upload-msg');
+    msgEl.className = 'alert d-none';
+
+    try {
+        if (file.size > CHUNK_THRESHOLD) {
+            await chunkedUpload(file);
+        } else {
+            const form = new FormData();
+            form.append('file', file);
+            // No Content-Type header — browser sets it with the correct multipart boundary
+            const res = await fetch('/api/files/upload', {
+                method: 'POST', headers: authHeaders(), body: form
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.error || 'Upload failed');
+            }
+        }
+        msgEl.className = 'alert alert-success';
+        msgEl.textContent = 'Upload successful';
+        document.getElementById('file-input').value = '';
+        loadFiles();
+    } catch (err) {
         msgEl.className = 'alert alert-danger';
-        msgEl.textContent = 'Upload error: ' + err.message;
+        msgEl.textContent = err.message || 'Upload failed';
     }
 });
 

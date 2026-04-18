@@ -105,6 +105,43 @@ public class FileService {
     }
 
     /**
+     * Persists metadata for a file that has already been written to disk by the chunked
+     * upload pipeline.
+     *
+     * <p>This is the final step of the chunked upload flow: the chunks have been assembled,
+     * security-validated, and written to {@code storedPath} before this method is called.
+     * The method only creates the {@link FileMetadata} database record; it does not move or
+     * copy any bytes.
+     *
+     * @param storedName        the UUID filename used on disk (returned from the assembly step)
+     * @param storedPath        absolute path to the assembled file; stored in the DB record
+     * @param sanitizedOriginal the sanitized original filename shown to users
+     * @param size              actual size of the assembled file in bytes
+     * @param mimeType          Tika-detected MIME type of the assembled file
+     * @param username          the username of the file owner
+     * @return a {@link FileMetadataDto} for the newly persisted record
+     */
+    @Transactional
+    public FileMetadataDto persistAssembledFile(String storedName, Path storedPath,
+                                                 String sanitizedOriginal, long size,
+                                                 String mimeType, String username) {
+        User owner = userRepository.findByUsername(username)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found: " + username));
+
+        FileMetadata meta = new FileMetadata();
+        meta.setFilename(storedName);
+        meta.setOriginalFilename(sanitizedOriginal);
+        meta.setMimeType(mimeType);
+        meta.setSize(size);
+        meta.setStoragePath(storedPath.toAbsolutePath().toString());
+        meta.setOwner(owner);
+        // Set CLEAN immediately; change to PENDING once async ClamAV scanning is integrated
+        meta.setScanStatus(ScanStatus.CLEAN);
+
+        return toDto(fileMetadataRepository.save(meta));
+    }
+
+    /**
      * Returns all files owned by the specified user.
      *
      * @param username the username whose files should be listed

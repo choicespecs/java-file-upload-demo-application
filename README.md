@@ -6,6 +6,7 @@ A secure file upload/download application built with Spring Boot 3.2, demonstrat
 
 - User registration and login with JWT-based authentication
 - File upload with security scanning (MIME detection, zip-bomb protection, blocked extensions)
+- **Chunked upload for large files** — files above 10 MB are automatically split into 5 MB chunks, uploaded sequentially with a live progress bar, and assembled server-side before validation
 - File download with ownership enforcement
 - Account lockout after repeated failed login attempts
 - Admin role with access to all files
@@ -41,8 +42,10 @@ All app-specific settings are under the `app.*` prefix in `application.propertie
 | `app.jwt-secret` | _(change me)_ | Secret for signing JWTs — any string works |
 | `app.jwt-expiration-ms` | `86400000` | Token TTL (24 hours) |
 | `app.upload-dir` | `./uploads` | Storage directory, created automatically |
-| `app.max-file-size-mb` | `10` | Per-file size limit |
+| `app.max-file-size-mb` | `10` | Per-file size limit for the single-request upload path |
 | `app.max-login-attempts` | `5` | Failed attempts before account lock |
+| `app.chunk-size-mb` | `5` | Size of each chunk in the chunked upload path (frontend must match) |
+| `app.max-large-file-size-mb` | `2048` | Maximum total file size allowed via chunked upload (2 GB) |
 
 ## Production (PostgreSQL)
 
@@ -78,13 +81,26 @@ All `/api/files/**` endpoints require `Authorization: Bearer <token>`.
 
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `POST` | `/api/files/upload` | User | Upload a file |
+| `POST` | `/api/files/upload` | User | Upload a file (≤ `app.max-file-size-mb`) |
 | `GET` | `/api/files` | User | List own files |
 | `GET` | `/api/files/{id}` | Owner / Admin | Download file |
 | `GET` | `/api/files/{id}/meta` | Owner / Admin | File metadata |
 | `DELETE` | `/api/files/{id}` | Owner / Admin | Delete file |
 | `GET` | `/api/files/all` | Admin only | List all files |
 | `GET` | `/api/files/scan/{id}` | Owner / Admin | Trigger rescan (stub — returns current metadata) |
+
+### Chunked Upload (large files)
+
+For files larger than `app.max-file-size-mb` (default 10 MB), the frontend automatically uses this four-step sequence:
+
+| Step | Method | Endpoint | Description |
+|---|---|---|---|
+| 1 | `POST` | `/api/files/upload/init` | Start session. Body: `{filename, totalSize, totalChunks}`. Returns `{uploadId}`. |
+| 2 | `POST` | `/api/files/upload/{uploadId}/chunk?chunkIndex=N` | Send one chunk as multipart `chunk` field. Repeatable. |
+| 3 | `POST` | `/api/files/upload/{uploadId}/complete` | Assemble chunks, run security validation, persist. Returns `FileMetadataDto`. |
+| 4 | `DELETE` | `/api/files/upload/{uploadId}` | Abort and clean up temp files (called automatically on error). |
+
+Chunk files are stored temporarily under `{upload-dir}/chunks/{uploadId}/` and deleted on completion or abort.
 
 ### Example (curl)
 
@@ -150,9 +166,11 @@ Test uploads go to `./target/test-uploads` and are cleaned by `mvn clean`.
 ```
 samples/
 ├── valid/
-│   ├── sample.txt   — plain text, accepted
-│   ├── sample.csv   — CSV, accepted
-│   └── sample.json  — JSON, accepted
+│   ├── sample.txt        — plain text, accepted (small file → regular upload)
+│   ├── sample.csv        — CSV, accepted
+│   ├── sample.json       — JSON, accepted
+│   ├── large-sample.bin  — 15 MB random binary (triggers chunked upload path)
+│   └── large-sample.bin.txt — curl instructions for testing the chunked API directly
 └── invalid/
     ├── blocked.exe  — rejected: File type not allowed: .exe (422)
     ├── blocked.sh   — rejected: File type not allowed: .sh  (422)
@@ -160,6 +178,8 @@ samples/
 ```
 
 Use `samples/valid/*` with curl or `requests/api-requests.http` to exercise happy-path uploads; use `samples/invalid/*` to confirm the 422 rejection responses.
+
+To test chunked upload in the browser: start the dev server, log in, and select `large-sample.bin` — the file picker will show a progress bar as the 15 MB file is split into 3 × 5 MB chunks and assembled server-side.
 
 ### HTTP request file
 
@@ -181,19 +201,27 @@ Use `samples/valid/*` with curl or `requests/api-requests.http` to exercise happ
 ```
 src/main/java/com/demo/fileupload/
 ├── config/          SecurityConfig, AppProperties
-├── controller/      AuthController, FileController, WebController
-├── dto/             Request/response objects, FileDownloadResult
+├── controller/      AuthController, FileController, ChunkedUploadController, WebController
+├── dto/             Request/response objects, FileDownloadResult, Chunk*
 ├── exception/       FileSecurityException, GlobalExceptionHandler
 ├── model/           User, FileMetadata, Role, ScanStatus
 ├── repository/      UserRepository, FileMetadataRepository
 ├── security/        JwtService, JwtAuthenticationFilter, UserDetailsServiceImpl
-└── service/         AuthService, FileService, FileSecurityService
+└── service/         AuthService, FileService, FileSecurityService, ChunkedUploadService, UploadSession
 ```
 
 ## Architecture & Documentation
 
 This application is a layered Spring Boot REST API with a stateless JWT authentication filter, a three-stage file security pipeline (extension blocking, Apache Tika MIME detection, zip-bomb streaming check), and role-based ownership access control. File bytes are stored under UUID-named paths to prevent path traversal; original filenames are sanitised and kept only in the database.
 
-For a full system description including an architecture diagram, component breakdown, detailed data flow, and documented design decisions, see [`ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Four documentation files live in the `docs/` folder:
+
+| File | Description |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System overview, ASCII architecture diagram, component breakdown, data flow, design decisions, common patterns, and known complexity areas |
+| [`docs/FLOW.md`](docs/FLOW.md) | Step-by-step request lifecycle traces, data model field reference, state management (DB, filesystem), async/background flows, error propagation, and external data flows |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | 12 documented architectural decisions with rationale, trade-offs, and code evidence; technology choice table; code patterns; and known technical debt items |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | JWT auth model, file upload threat model, implemented defences, missing controls with implementation guidance, and production hardening checklist |
+| [`docs/LARGE_FILE_UPLOADS.md`](docs/LARGE_FILE_UPLOADS.md) | Five approaches to large file uploads with trade-off analysis, comparison matrix, rationale for the chosen approach, and a full step-by-step implementation flow |
 
 All Java source files are documented with Javadoc on every class and method. The JavaScript frontend (`app.js`) uses JSDoc block comments. Inline `//` comments explain non-obvious logic throughout.

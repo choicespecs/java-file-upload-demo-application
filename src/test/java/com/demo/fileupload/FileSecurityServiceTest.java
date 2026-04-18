@@ -107,10 +107,14 @@ class FileSecurityServiceTest {
 
     @Test
     void zipBombByRatio_throwsFileSecurityException() throws Exception {
-        // 200 entries × 10 KB of repeated 'A' — tiny compressed, huge uncompressed ratio
-        byte[] repeated = new byte[10_000];
+        // 10 entries × 100 KB of repeated 'A' bytes at BEST_COMPRESSION.
+        // Each entry deflates to ~50 bytes; total compressed ≈ 1.4 KB vs 1 MB uncompressed
+        // → ratio ≈ 700, well above the MAX_ZIP_EXPANSION_RATIO threshold of 100.
+        // Using 200 × 10 KB entries (the original values) does not reliably exceed the
+        // threshold because ZIP central-directory overhead dilutes the ratio to ~80.
+        byte[] repeated = new byte[100_000];
         java.util.Arrays.fill(repeated, (byte) 'A');
-        byte[] zip = createZip("bomb.txt", repeated, 200);
+        byte[] zip = createZip("bomb.txt", repeated, 10);
 
         MockMultipartFile file = new MockMultipartFile("file", "bomb.zip",
                 "application/zip", zip);

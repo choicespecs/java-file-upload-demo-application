@@ -7,6 +7,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -87,7 +90,46 @@ public class FileSecurityService {
         }
         // Layer 3: zip-bomb check — only for confirmed ZIP content (most expensive check)
         if (detectedMime.equals("application/zip") || detectedMime.equals("application/x-zip-compressed")) {
-            checkZipBomb(bytes, file.getSize());
+            checkZipBomb(new ByteArrayInputStream(bytes), file.getSize());
+        }
+
+        return detectedMime;
+    }
+
+    /**
+     * Validates an already-assembled file that resides on disk and returns its detected MIME type.
+     *
+     * <p>Used by the chunked upload path after all chunks have been concatenated into a single
+     * file. Applies the same three-layer security checks as
+     * {@link #validateAndGetMimeType(MultipartFile)}, but reads from the given {@link Path}
+     * instead of loading the file into memory, making it suitable for arbitrarily large files.
+     *
+     * <p>MIME detection uses {@link Tika#detect(java.io.File)}, which reads only the leading
+     * magic bytes rather than the full file content.
+     *
+     * @param filePath         path to the assembled file on disk
+     * @param originalFilename the client-supplied filename, used only for extension extraction
+     * @return the Tika-detected MIME type string
+     * @throws IOException           if reading the file fails
+     * @throws FileSecurityException if the file fails any security check
+     */
+    public String validateAndGetMimeType(Path filePath, String originalFilename) throws IOException {
+        String extension = extension(originalFilename);
+
+        // Layer 1: extension block
+        if (BLOCKED_EXTENSIONS.contains(extension.toLowerCase())) {
+            throw new FileSecurityException("File type not allowed: ." + extension);
+        }
+
+        // Layer 2: Tika reads only the magic bytes — no need to load the full file into memory
+        String detectedMime = tika.detect(filePath.toFile());
+        if (detectedMime.contains("executable") || "application/x-msdownload".equals(detectedMime)) {
+            throw new FileSecurityException("Executable content detected");
+        }
+
+        // Layer 3: zip-bomb check streams from the file path
+        if (detectedMime.equals("application/zip") || detectedMime.equals("application/x-zip-compressed")) {
+            checkZipBomb(Files.newInputStream(filePath), Files.size(filePath));
         }
 
         return detectedMime;
@@ -131,6 +173,8 @@ public class FileSecurityService {
      * <p>Uses {@link ZipInputStream} to read actual decompressed bytes rather than trusting
      * {@link ZipEntry#getSize()}, which returns {@code -1} for DEFLATE-compressed entries.
      * An 8 KB read buffer keeps heap usage low while counting bytes across all entries.
+     * The caller supplies the {@link InputStream} so this method works with both in-memory
+     * byte arrays and large on-disk files without loading the full content into the heap.
      *
      * <p>Two independent limits are checked:
      * <ul>
@@ -142,15 +186,15 @@ public class FileSecurityService {
      *       Skipped if either value is 0 to avoid division-related edge cases.</li>
      * </ul>
      *
-     * @param bytes          the raw bytes of the ZIP file (already read into memory)
-     * @param compressedSize the file size as reported by the multipart upload (used for ratio check)
+     * @param inputStream    an open stream over the ZIP content; closed by this method
+     * @param compressedSize the on-disk file size in bytes (used for the ratio check)
      * @throws IOException           if the ZIP structure is corrupt and cannot be read
      * @throws FileSecurityException if either the absolute size or the ratio limit is exceeded
      */
-    private void checkZipBomb(byte[] bytes, long compressedSize) throws IOException {
+    private void checkZipBomb(InputStream inputStream, long compressedSize) throws IOException {
         long uncompressed = 0;
         byte[] buf = new byte[8192];
-        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+        try (ZipInputStream zis = new ZipInputStream(inputStream)) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
                 int n;
