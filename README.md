@@ -218,9 +218,9 @@ Four documentation files live in the `docs/` folder:
 
 | File | Description |
 |---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System overview, ASCII architecture diagram, component breakdown, data flow, design decisions, common patterns, and known complexity areas |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System overview, Mermaid architecture diagram, component breakdown, data flow, design decisions, common patterns, and known complexity areas |
 | [`docs/FLOW.md`](docs/FLOW.md) | Step-by-step request lifecycle traces, data model field reference, state management (DB, filesystem), async/background flows, error propagation, and external data flows |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | 12 documented architectural decisions with rationale, trade-offs, and code evidence; technology choice table; code patterns; and known technical debt items |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | 14 documented architectural decisions with rationale, trade-offs, and code evidence; technology choice table; code patterns; and known technical debt items |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | JWT auth model, file upload threat model, implemented defences, missing controls with implementation guidance, and production hardening checklist |
 | [`docs/LARGE_FILE_UPLOADS.md`](docs/LARGE_FILE_UPLOADS.md) | Five approaches to large file uploads with trade-off analysis, comparison matrix, rationale for the chosen approach, and a full step-by-step implementation flow |
 

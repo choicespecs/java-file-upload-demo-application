@@ -137,7 +137,7 @@ Before any controller method is reached, `JwtAuthenticationFilter.doFilterIntern
 
 1. JWT filter authenticates the request.
 2. `ChunkedUploadController.completeUpload` loads and ownership-verifies the session.
-3. `ChunkedUploadService.assembleAndPersist(session, username)`:
+3. `ChunkedUploadService.completeUpload(uploadId, username)` verifies session completeness, then:
    a. Generates a final `UUID.randomUUID()` as the `storedName` (on-disk filename).
    b. Opens an `OutputStream` to `{upload-dir}/{storedName}`.
    c. Iterates chunk indexes `0` through `session.totalChunks - 1` in order; for each, copies the chunk file bytes into the output stream using `Files.copy`. Missing a chunk at this point would cause a `NoSuchFileException` → HTTP 500 via `GlobalExceptionHandler`.
@@ -149,7 +149,7 @@ Before any controller method is reached, `JwtAuthenticationFilter.doFilterIntern
       - Returns the detected MIME type string.
    f. On `FileSecurityException`: the assembled file is deleted from disk before re-throwing → HTTP 422.
    g. Calls `FileService.persistAssembledFile(storedName, storedPath, sanitizedOriginal, size, mimeType, username)` which: looks up the `User` entity, constructs `FileMetadata` with `scanStatus = CLEAN`, and calls `FileMetadataRepository.save` → `INSERT INTO file_metadata`.
-   h. `Files.walkFileTree` recursively deletes the temp directory and all chunk files.
+   h. `FileSystemUtils.deleteRecursively(session.getTempDir())` deletes the temp directory and all chunk files; this runs in a `finally` block so it executes even if security validation fails.
    i. Session is removed from the `ConcurrentHashMap`.
 4. `FileMetadataDto` is returned → HTTP 200.
 
@@ -164,7 +164,7 @@ Before any controller method is reached, `JwtAuthenticationFilter.doFilterIntern
 
 1. JWT filter authenticates the request.
 2. `ChunkedUploadController.abortUpload` loads and ownership-verifies the session.
-3. `ChunkedUploadService.abortSession(uploadId)` deletes the temp directory tree and removes the session from the map.
+3. `ChunkedUploadService.abortUpload(uploadId, username)` deletes the temp directory via `FileSystemUtils.deleteRecursively` and removes the session from the map.
 4. Returns HTTP 204.
 
 **State destroyed:** temp directory and any partial chunk files deleted; `UploadSession` removed from map.
@@ -321,7 +321,7 @@ In-memory POJO (not a JPA entity, not persisted) representing one in-progress ch
 | `tempDir` | `Path` | Absolute path to `{upload-dir}/chunks/{uploadId}/`; chunk files live here |
 | `createdAt` | `Instant` | Session creation timestamp; intended for TTL-based cleanup (no cleanup job exists yet) |
 
-**Lifecycle:** created by `ChunkedUploadService.initSession`; mutated by each `uploadChunk` call; destroyed by `assembleAndPersist` (on complete) or `abortSession` (on abort). Never persisted — lost on application restart.
+**Lifecycle:** created by `ChunkedUploadService.initSession`; mutated by each `receiveChunk` call (via `uploadChunk`); destroyed by `completeUpload` (on complete) or `abortUpload` (on abort). Never persisted — lost on application restart.
 
 ---
 
@@ -364,7 +364,7 @@ Completed files are stored under `app.upload-dir` (default `./uploads`). Each fi
 
 **Dev test state:** Integration tests redirect uploads to `./target/test-uploads` via `@TestPropertySource`. This directory is cleaned by `mvn clean`.
 
-**Orphan risk:** Two orphan scenarios exist: (1) for single-request uploads, if `FileMetadataRepository.save` fails after `file.transferTo`, the assembled file is orphaned; (2) for chunked uploads, a JVM crash between assembly and the `Files.walkFileTree` deletion step orphans both the assembled file and the temp directory. No automated cleanup mechanism covers either case.
+**Orphan risk:** Two orphan scenarios exist: (1) for single-request uploads, if `FileMetadataRepository.save` fails after `file.transferTo`, the assembled file is orphaned; (2) for chunked uploads, a JVM crash between assembly and the `FileSystemUtils.deleteRecursively` cleanup step (in the `finally` block) orphans the assembled file; a crash before assembly completes orphans the temp directory. No automated cleanup mechanism covers either case.
 
 ---
 
@@ -400,7 +400,7 @@ The application does not use `HttpSession`, Spring Cache, or Redis. Outside of t
 
 **Trigger:** Should fire on a fixed interval (e.g., every 15 minutes) via `@Scheduled`.
 
-**Intended behavior:** Iterate `ChunkedUploadService.sessions`; for each `UploadSession` where `Instant.now()` is more than a configurable TTL (e.g., 24 hours) beyond `session.createdAt`, call `abortSession(uploadId)` to delete the temp directory and remove the entry from the map.
+**Intended behavior:** Iterate `ChunkedUploadService.sessions`; for each `UploadSession` where `Instant.now()` is more than a configurable TTL (e.g., 24 hours) beyond `session.getCreatedAt()`, call `abortUpload(uploadId, session.getUsername())` to delete the temp directory and remove the entry from the map.
 
 **Why it does not exist yet:** `UploadSession.createdAt` is populated but no `@Scheduled` method reads it. This is flagged as technical debt in `DESIGN.md`. The consequence is that abandoned in-progress uploads accumulate in both the in-memory map and the filesystem until the application is restarted.
 

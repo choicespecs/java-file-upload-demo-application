@@ -227,7 +227,7 @@ This document captures the significant architectural and implementation choices 
 - Two overloads that call Tika via slightly different APIs (`tika.detect(bytes, filename)` vs. `Tika.detect(file)`) could theoretically diverge in edge-case MIME decisions in future Tika versions. In practice they use the same detector registry.
 - `checkZipBomb` now accepts an `InputStream` and a `compressedSize` long. Callers must supply the correct `compressedSize` — for the Path overload this is `Files.size(path)`.
 
-**Evidence:** `FileSecurityService.validateAndGetMimeType(Path, String)` method; `checkZipBomb(InputStream, long)` signature; `ChunkedUploadService.assembleAndPersist` calling the Path overload.
+**Evidence:** `FileSecurityService.validateAndGetMimeType(Path, String)` method; `checkZipBomb(InputStream, long)` signature; `ChunkedUploadService.completeUpload` calling the Path overload after assembly.
 
 ---
 
@@ -387,6 +387,6 @@ Integration tests annotated with `@SpringBootTest` and `@Transactional` roll bac
 | No Flyway/Liquibase migrations | Schema relies on Hibernate auto-DDL in dev; no migration history for prod | Medium | Add Flyway to `pom.xml` with an initial migration script matching the current entity model |
 | `@EnableMethodSecurity` unused | Annotation is present but no `@PreAuthorize` annotations exist in the codebase — dead configuration | Low | Either use method security for admin checks (replacing the `isAdmin` boolean pattern) or remove the annotation |
 | No server-side error logging | Exceptions are mapped to HTTP responses but not logged | Medium | Add SLF4J `Logger` fields to services and log `WARN`/`ERROR` in exception handlers |
-| No stale upload session cleanup | Abandoned in-progress chunked uploads accumulate in `ChunkedUploadService.sessions` and leave temp chunk files on disk indefinitely — no `@Scheduled` task expires old sessions | Medium | Add a `@Scheduled(fixedDelay = 900_000)` method that iterates sessions and calls `abortSession` for entries where `Instant.now().isAfter(session.createdAt.plus(sessionTtl))`; make the TTL configurable via `app.*` |
+| No stale upload session cleanup | Abandoned in-progress chunked uploads accumulate in `ChunkedUploadService.sessions` and leave temp chunk files on disk indefinitely — no `@Scheduled` task expires old sessions | Medium | Add a `@Scheduled(fixedDelay = 900_000)` method that iterates sessions and calls `abortUpload(uploadId, session.getUsername())` for entries where `Instant.now().isAfter(session.getCreatedAt().plus(sessionTtl))`; make the TTL configurable via `app.*` |
 | Chunked upload assembly is not transactional with disk cleanup | Between `FileService.persistAssembledFile` and the temp directory deletion, a JVM crash leaves both the assembled file and the temp directory on disk | Low | Move the cleanup into a `try/finally` block or use a `CompletableFuture` that guarantees cleanup regardless of persistence outcome |
 | No per-chunk integrity verification | Chunks are written to disk and counted but their contents are not checksummed — a corrupted or truncated network transfer produces a silently-corrupted assembled file | Low | Accept an optional `chunkChecksum` (e.g., MD5 or CRC32) query parameter per chunk; verify it before writing; return HTTP 422 on mismatch so the client can retry |

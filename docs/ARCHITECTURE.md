@@ -153,10 +153,10 @@ For files larger than 10 MB (configurable via `CHUNK_THRESHOLD` in `app.js`), th
 **Step 3 — Complete**
 1. After all chunks are confirmed, `app.js` posts `POST /api/files/upload/{uploadId}/complete`.
 2. `ChunkedUploadController.completeUpload` loads and verifies session ownership.
-3. `ChunkedUploadService.assembleFile` iterates chunk indexes 0 through `totalChunks - 1` in order, copying each chunk file's bytes into a new `OutputStream` writing to `{upload-dir}/{UUID}`.
+3. `ChunkedUploadService.completeUpload` verifies all chunks are present, then iterates chunk indexes 0 through `totalChunks - 1` in order, copying each chunk file's bytes via `Files.copy` into a new `OutputStream` writing to `{upload-dir}/{UUID}`.
 4. `FileSecurityService.validateAndGetMimeType(Path assembledPath, String originalFilename)` runs on the assembled file. This overload uses `Tika.detect(File)` for magic-byte detection and `Files.newInputStream` for the zip-bomb streaming check — the assembled file is never fully loaded into heap.
 5. On success, `FileService.persistAssembledFile(storedName, storedPath, sanitizedOriginal, size, mimeType, username)` persists a `FileMetadata` entity (same structure as single-request uploads, `scanStatus = CLEAN`).
-6. The temporary directory and all chunk files are deleted. The session is removed from the map. `FileMetadataDto` is returned → HTTP 200.
+6. `FileSystemUtils.deleteRecursively(session.getTempDir())` removes the temporary directory and all chunk files in a `finally` block. The session is removed from the map. `FileMetadataDto` is returned → HTTP 200.
 
 **Abort**
 1. If the upload is cancelled or an unrecoverable error occurs, `app.js` calls `DELETE /api/files/upload/{uploadId}`.

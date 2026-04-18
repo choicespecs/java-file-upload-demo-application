@@ -61,9 +61,9 @@ This codebase is fully documented.
 
 | File | Description |
 |---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System overview, ASCII architecture diagram, component breakdown, data flow (upload, download, error paths), design decisions with rationale and trade-offs, common patterns, and known complexity areas |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System overview, Mermaid architecture diagram, component breakdown, data flow (upload, download, error paths), design decisions with rationale and trade-offs, common patterns, and known complexity areas |
 | [`docs/FLOW.md`](docs/FLOW.md) | Step-by-step request and event lifecycle traces (registration, login, upload, download, delete), data models with all fields, state management (DB, filesystem, in-memory), async/background flows, error and exception propagation, and external data flows |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | Architectural decisions (12 documented decisions with rationale, trade-offs, alternatives, and code evidence), technology choices table, code organization patterns, constraint-driven decisions, and known technical debt items |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Architectural decisions (14 documented decisions with rationale, trade-offs, alternatives, and code evidence), technology choices table, code organization patterns, constraint-driven decisions, and known technical debt items |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | JWT authentication model, file upload threat model and defences, missing controls with implementation guidance, access control, injection/XSS, brute-force lockout, transport security, secrets management, and production hardening checklist |
 | [`docs/LARGE_FILE_UPLOADS.md`](docs/LARGE_FILE_UPLOADS.md) | Five approaches to large file uploads (client chunking, streaming, presigned URL, tus resumable, async queue) with rationale, comparison matrix, and full step-by-step implementation flow for the chunked upload path |
 
@@ -76,4 +76,4 @@ This codebase is fully documented.
 - `src/main/java/` — all 20 source files documented (config, controllers, DTOs, exceptions, models, repositories, security, services)
 - `src/test/java/` — all 4 test classes documented with class-level Javadoc describing the test strategy and helper method Javadoc
 
-*Documentation last generated/updated by the `documentation-writer` agent on 2026-04-17; chunked upload additions on 2026-04-18.*
+*Documentation last generated/updated by the `documentation-writer` agent on 2026-04-18. All diagrams use Mermaid (sequenceDiagram and flowchart TD with subgraphs). All Java sources use Javadoc; JavaScript uses JSDoc.*
